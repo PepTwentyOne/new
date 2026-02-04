@@ -1033,10 +1033,9 @@ class PartTimeAPI:
             log_message("ERROR", f"{self.log_prefix}Ошибка получения капчи: {e}", "api")
             return None
     
-    def register_account(self, phone, captcha_code, password):
-        """Регистрация аккаунта с улучшенной обработкой ошибок"""
-        log_message("INFO", f"{self.log_prefix}Регистрация аккаунта {phone}", "api")
-        
+    def send_sms_code(self, phone, captcha_code, area_code="+1"):
+        """Отправляет SMS-код после ввода капчи."""
+        log_message("INFO", f"{self.log_prefix}Запрос SMS-кода для {phone}", "api")
         try:
             headers = self.session.headers.copy()
             headers.update({
@@ -1048,41 +1047,38 @@ class PartTimeAPI:
                 "Language": "ru",
             })
 
-            # 1. Отправляем запрос sendSms
-            url1 = f"{self.base}/apiAnt/sendSms?lang=ru"
-            data1 = {
-                "areaCode": "+1",
+            url = f"{self.base}/apiAnt/sendSms?lang=ru"
+            data = {
+                "areaCode": area_code,
                 "phone": phone,
                 "verCode": captcha_code,
-                "smsType": "REGISTER"
+                "smsType": "REGISTER",
             }
 
-            log_message("DEBUG", f"{self.log_prefix}Отправка sendSms: {data1}", "api")
+            log_message("DEBUG", f"{self.log_prefix}Отправка sendSms: {data}", "api")
+            response = self.session.post(url, json=data, headers=headers, timeout=30)
 
-            response1 = self.session.post(url1, json=data1, headers=headers, timeout=30)
-
-            # Сохраняем сырой ответ для отладки
-            debug_info1 = {
+            debug_info = {
                 "timestamp": datetime.now().isoformat(),
                 "phone": phone,
                 "stage": "sendSms",
-                "url": url1,
-                "request": data1,
-                "status": response1.status_code,
-                "headers": dict(response1.headers),
-                "text": response1.text[:500] if response1.text else "EMPTY_RESPONSE",
-                "cookies": requests.utils.dict_from_cookiejar(self.session.cookies)
+                "url": url,
+                "request": data,
+                "status": response.status_code,
+                "headers": dict(response.headers),
+                "text": response.text[:500] if response.text else "EMPTY_RESPONSE",
+                "cookies": requests.utils.dict_from_cookiejar(self.session.cookies),
             }
-            save_debug_file(f"register_sendSms_{phone}_{int(time.time())}.json", debug_info1, "registration")
+            save_debug_file(f"register_sendSms_{phone}_{int(time.time())}.json", debug_info, "registration")
 
-            if not response1.text:
+            if not response.text:
                 log_message("ERROR", f"{self.log_prefix}Пустой ответ от sendSms", "api")
                 return False, "empty_response"
 
             try:
-                j1 = response1.json()
+                j = response.json()
             except json.JSONDecodeError as e:
-                content_type = response1.headers.get("Content-Type", "")
+                content_type = response.headers.get("Content-Type", "")
                 log_message(
                     "ERROR",
                     f"{self.log_prefix}Невозможно распарсить JSON из sendSms: {e}, content-type: {content_type}",
@@ -1090,52 +1086,63 @@ class PartTimeAPI:
                 )
                 if "json" not in content_type.lower():
                     return False, f"invalid_json: non-json content-type {content_type or 'unknown'}"
-                return False, f"invalid_json: {response1.text[:100]}"
+                return False, f"invalid_json: {response.text[:100]}"
 
-            if j1.get("code") != 200:
-                error_msg = j1.get("message", str(j1))
+            if j.get("code") != 200:
+                error_msg = j.get("message", str(j))
                 log_message("ERROR", f"{self.log_prefix}Ошибка sendSms: {error_msg}", "api")
                 return False, error_msg
 
-            sms_code = j1.get("data", {}).get("smsCode", "")
-            if not sms_code:
-                log_message("ERROR", f"{self.log_prefix}Нет smsCode в ответе sendSms", "api")
-                return False, "no_sms_code"
+            return True, j
+        except Exception as e:
+            log_message("ERROR", f"{self.log_prefix}Ошибка sendSms: {e}", "api")
+            return False, str(e)
 
-            # 2. Отправляем запрос checkSms
-            url2 = f"{self.base}/apiAnt/checkSms?lang=ru"
-            data2 = {
-                "areaCode": "+1",
+    def verify_sms_code(self, phone, sms_code, area_code="+1"):
+        """Проверяет SMS-код и возвращает smsToken."""
+        log_message("INFO", f"{self.log_prefix}Проверка SMS-кода для {phone}", "api")
+        try:
+            headers = self.session.headers.copy()
+            headers.update({
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Accept-Encoding": "gzip, deflate",
+                "Origin": self.base,
+                "Referer": f"{self.base}/",
+                "Language": "ru",
+            })
+
+            url = f"{self.base}/apiAnt/checkSms?lang=ru"
+            data = {
+                "areaCode": area_code,
                 "phone": phone,
-                "smsCode": sms_code
+                "smsCode": sms_code,
             }
 
-            log_message("DEBUG", f"{self.log_prefix}Отправка checkSms: {data2}", "api")
+            log_message("DEBUG", f"{self.log_prefix}Отправка checkSms: {data}", "api")
+            response = self.session.post(url, json=data, headers=headers, timeout=30)
 
-            response2 = self.session.post(url2, json=data2, headers=headers, timeout=30)
-
-            # Сохраняем сырой ответ для отладки
-            debug_info2 = {
+            debug_info = {
                 "timestamp": datetime.now().isoformat(),
                 "phone": phone,
                 "stage": "checkSms",
-                "url": url2,
-                "request": data2,
-                "status": response2.status_code,
-                "headers": dict(response2.headers),
-                "text": response2.text[:500] if response2.text else "EMPTY_RESPONSE",
-                "cookies": requests.utils.dict_from_cookiejar(self.session.cookies)
+                "url": url,
+                "request": data,
+                "status": response.status_code,
+                "headers": dict(response.headers),
+                "text": response.text[:500] if response.text else "EMPTY_RESPONSE",
+                "cookies": requests.utils.dict_from_cookiejar(self.session.cookies),
             }
-            save_debug_file(f"register_checkSms_{phone}_{int(time.time())}.json", debug_info2, "registration")
+            save_debug_file(f"register_checkSms_{phone}_{int(time.time())}.json", debug_info, "registration")
 
-            if not response2.text:
+            if not response.text:
                 log_message("ERROR", f"{self.log_prefix}Пустой ответ от checkSms", "api")
                 return False, "empty_response"
 
             try:
-                j2 = response2.json()
+                j = response.json()
             except json.JSONDecodeError as e:
-                content_type = response2.headers.get("Content-Type", "")
+                content_type = response.headers.get("Content-Type", "")
                 log_message(
                     "ERROR",
                     f"{self.log_prefix}Невозможно распарсить JSON из checkSms: {e}, content-type: {content_type}",
@@ -1143,62 +1150,78 @@ class PartTimeAPI:
                 )
                 if "json" not in content_type.lower():
                     return False, f"invalid_json: non-json content-type {content_type or 'unknown'}"
-                return False, f"invalid_json: {response2.text[:100]}"
+                return False, f"invalid_json: {response.text[:100]}"
 
-            if j2.get("code") != 200:
-                error_msg = j2.get("message", str(j2))
+            if j.get("code") != 200:
+                error_msg = j.get("message", str(j))
                 log_message("ERROR", f"{self.log_prefix}Ошибка checkSms: {error_msg}", "api")
                 return False, error_msg
 
-            sms_token = j2.get("data", {}).get("smsToken")
+            sms_token = j.get("data", {}).get("smsToken")
             if not sms_token:
                 log_message("ERROR", f"{self.log_prefix}Нет sms_token в ответе", "api")
                 return False, "no_sms_token"
 
-            # 3. Отправляем запрос register
-            url3 = f"{self.base}/apiAnt/register?lang=ru"
+            return True, sms_token
+        except Exception as e:
+            log_message("ERROR", f"{self.log_prefix}Ошибка checkSms: {e}", "api")
+            return False, str(e)
+
+    def register_account(self, phone, sms_token, password, area_code="+1"):
+        """Финальная регистрация аккаунта после проверки SMS-кода."""
+        log_message("INFO", f"{self.log_prefix}Регистрация аккаунта {phone}", "api")
+        try:
+            headers = self.session.headers.copy()
+            headers.update({
+                "Accept": "application/json, text/plain, */*",
+                "Content-Type": "application/json",
+                "Accept-Encoding": "gzip, deflate",
+                "Origin": self.base,
+                "Referer": f"{self.base}/",
+                "Language": "ru",
+            })
+
+            url = f"{self.base}/apiAnt/register?lang=ru"
             settings = load_json(SETTINGS_FILE)
             hashed_pwd = hash_md5(password)
             device_id = str(random.randint(10**18, 10**19-1))
 
-            data3 = {
+            data = {
                 "password": hashed_pwd,
-                "areaCode": "+1",
+                "areaCode": area_code,
                 "phone": phone,
                 "smsToken": sms_token,
                 "deviceId": device_id,
                 "deviceType": "phone",
                 "inviteCode": settings.get("invite_code", ""),
-                "channelCode": "", 
-                "refCode": ""
+                "channelCode": "",
+                "refCode": "",
             }
 
-            log_message("DEBUG", f"{self.log_prefix}Отправка register: {data3}", "api")
+            log_message("DEBUG", f"{self.log_prefix}Отправка register: {data}", "api")
+            response = self.session.post(url, json=data, headers=headers, timeout=30)
 
-            response3 = self.session.post(url3, json=data3, headers=headers, timeout=30)
-
-            # Сохраняем сырой ответ для отладки
-            debug_info3 = {
+            debug_info = {
                 "timestamp": datetime.now().isoformat(),
                 "phone": phone,
                 "stage": "register",
-                "url": url3,
-                "request": data3,
-                "status": response3.status_code,
-                "headers": dict(response3.headers),
-                "text": response3.text[:500] if response3.text else "EMPTY_RESPONSE",
-                "cookies": requests.utils.dict_from_cookiejar(self.session.cookies)
+                "url": url,
+                "request": data,
+                "status": response.status_code,
+                "headers": dict(response.headers),
+                "text": response.text[:500] if response.text else "EMPTY_RESPONSE",
+                "cookies": requests.utils.dict_from_cookiejar(self.session.cookies),
             }
-            save_debug_file(f"register_register_{phone}_{int(time.time())}.json", debug_info3, "registration")
+            save_debug_file(f"register_register_{phone}_{int(time.time())}.json", debug_info, "registration")
 
-            if not response3.text:
+            if not response.text:
                 log_message("ERROR", f"{self.log_prefix}Пустой ответ от register", "api")
                 return False, "empty_response"
 
             try:
-                j3 = response3.json()
+                j = response.json()
             except json.JSONDecodeError as e:
-                content_type = response3.headers.get("Content-Type", "")
+                content_type = response.headers.get("Content-Type", "")
                 log_message(
                     "ERROR",
                     f"{self.log_prefix}Невозможно распарсить JSON из register: {e}, content-type: {content_type}",
@@ -1206,26 +1229,24 @@ class PartTimeAPI:
                 )
                 if "json" not in content_type.lower():
                     return False, f"invalid_json: non-json content-type {content_type or 'unknown'}"
-                return False, f"invalid_json: {response3.text[:100]}"
+                return False, f"invalid_json: {response.text[:100]}"
 
-            if j3.get("code") == 200:
-                token = j3.get("data", {}).get("token")
+            if j.get("code") == 200:
+                token = j.get("data", {}).get("token")
                 if token:
                     self.session.headers.update({"Authorization": token})
                     self.token = token
 
-                # Обновляем cookies после регистрации
                 cookies_dict = requests.utils.dict_from_cookiejar(self.session.cookies)
                 if self.phone and cookies_dict:
                     update_account_cookies(self.phone, cookies_dict)
 
                 log_message("INFO", f"{self.log_prefix}Регистрация успешна", "api")
-                return True, j3
+                return True, j
 
-            error_msg = j3.get("message", str(j3))
+            error_msg = j.get("message", str(j))
             log_message("ERROR", f"{self.log_prefix}Ошибка регистрации: {error_msg}", "api")
             return False, error_msg
-
         except Exception as e:
             log_message("ERROR", f"{self.log_prefix}Ошибка регистрации: {e}", "api")
             return False, str(e)
@@ -1774,6 +1795,8 @@ def start_quick_registration(message):
         "api": api,
         "proxy": proxy,
         "attempts": 0,
+        "sms_attempts": 0,
+        "stage": "captcha",
     }
     bot.send_photo(
         ADMIN_ID,
@@ -1813,7 +1836,9 @@ def start_registration(message):
             "password": password,
             "api": api, 
             "proxy": proxy, 
-            "attempts": 0
+            "attempts": 0,
+            "sms_attempts": 0,
+            "stage": "captcha",
         }
         
         # Отправляем капчу пользователю
@@ -1880,7 +1905,9 @@ def process_mass_registration_count(message):
                 "password": password,
                 "api": api,
                 "proxy": proxy,
-                "attempts": 0
+                "attempts": 0,
+                "sms_attempts": 0,
+                "stage": "captcha",
             }
         }
         
@@ -1908,18 +1935,67 @@ def handle_quick_registration_captcha(message):
     st = quick_registration_states.get(message.from_user.id)
     if not st:
         return
-    code = message.text.strip()
-    if not code.isdigit() or len(code) != 4:
-        bot.send_message(ADMIN_ID, "Капча — 4 цифры. Попробуйте снова.")
-        return
     phone = st["phone"]
     api = st["api"]
-    st["attempts"] += 1
-    bot.send_message(
-        ADMIN_ID,
-        f"Регистрация: пытаюсь зарегистрировать +1{phone} (попытка {st['attempts']})...",
-    )
-    ok, resp = api.register_account(phone, code, phone)
+    stage = st.get("stage", "captcha")
+
+    if stage == "captcha":
+        code = message.text.strip()
+        if not code.isdigit() or len(code) != 4:
+            bot.send_message(ADMIN_ID, "Капча — 4 цифры. Попробуйте снова.")
+            return
+        st["attempts"] += 1
+        bot.send_message(
+            ADMIN_ID,
+            f"Регистрация: отправляю SMS для +1{phone} (попытка {st['attempts']})...",
+        )
+        ok, resp = api.send_sms_code(phone, code, "+1")
+        if ok:
+            st["stage"] = "sms"
+            bot.send_message(ADMIN_ID, "✅ SMS отправлено. Введите код из SMS:")
+            return
+        err = str(resp)
+        if st["attempts"] < 3:
+            new_proxy = None
+            proxies = get_proxies()
+            if proxies:
+                new_proxy = random.choice(proxies)
+                try:
+                    api.set_proxy_for_account(new_proxy, phone, phone, "+1")
+                    st["proxy"] = new_proxy
+                except Exception:
+                    pass
+            new_captcha = api.get_captcha()
+            if new_captcha:
+                bot.send_photo(
+                    ADMIN_ID,
+                    new_captcha,
+                    caption=(
+                        f"Ошибка отправки SMS: {err}\n"
+                        f"Новая капча (прокси {new_proxy}): Введите 4 цифры"
+                    ),
+                )
+                return
+        bot.send_message(ADMIN_ID, f"❌ Регистрация не удалась: {err}")
+        quick_registration_states.pop(message.from_user.id, None)
+        return
+
+    sms_code = message.text.strip()
+    if not sms_code.isdigit() or not (4 <= len(sms_code) <= 8):
+        bot.send_message(ADMIN_ID, "SMS-код должен быть 4-8 цифр. Попробуйте снова.")
+        return
+    st["sms_attempts"] += 1
+    ok, sms_token = api.verify_sms_code(phone, sms_code, "+1")
+    if not ok:
+        err = str(sms_token)
+        if st["sms_attempts"] < 3:
+            bot.send_message(ADMIN_ID, f"❌ Ошибка проверки SMS: {err}\nВведите код снова:")
+            return
+        bot.send_message(ADMIN_ID, f"❌ Регистрация не удалась: {err}")
+        quick_registration_states.pop(message.from_user.id, None)
+        return
+
+    ok, resp = api.register_account(phone, sms_token, phone, "+1")
     if ok:
         settings = load_json(SETTINGS_FILE)
         saved = save_account(phone, phone, proxy=st.get("proxy", ""), wallet=settings.get("wallet", ""))
@@ -1932,29 +2008,8 @@ def handle_quick_registration_captcha(message):
             bot.send_message(ADMIN_ID, "❌ Аккаунт уже существует.")
         quick_registration_states.pop(message.from_user.id, None)
         return
-    err = str(resp)
-    if st["attempts"] < 3:
-        new_proxy = None
-        proxies = get_proxies()
-        if proxies:
-            new_proxy = random.choice(proxies)
-            try:
-                api.set_proxy_for_account(new_proxy, phone, phone, "+1")
-                st["proxy"] = new_proxy
-            except Exception:
-                pass
-        new_captcha = api.get_captcha()
-        if new_captcha:
-            bot.send_photo(
-                ADMIN_ID,
-                new_captcha,
-                caption=(
-                    f"Ошибка регистрации: {err}\n"
-                    f"Новая капча (прокси {new_proxy}): Введите 4 цифры"
-                ),
-            )
-            return
-    bot.send_message(ADMIN_ID, f"❌ Регистрация не удалась: {err}")
+
+    bot.send_message(ADMIN_ID, f"❌ Регистрация не удалась: {resp}")
     quick_registration_states.pop(message.from_user.id, None)
 
 @bot.message_handler(func=lambda m: m.from_user.id in registration_states)
@@ -1964,24 +2019,74 @@ def handle_captcha_reply(message):
     st = registration_states.get(message.from_user.id)
     if not st:
         return
-    
-    code = message.text.strip()
-    if not code.isdigit() or len(code) != 4:
-        bot.send_message(ADMIN_ID, "Капча — 4 цифры. Попробуйте снова.")
-        return
-    
     phone = st["phone"]
     password = st["password"]
     api = st["api"]
-    st["attempts"] += 1
-    
-    bot.send_message(ADMIN_ID, f"Регистрация: пытаюсь зарегистрировать +1{phone}...")
-    
-    ok, resp = api.register_account(phone, code, password)
-    
+    stage = st.get("stage", "captcha")
+
+    if stage == "captcha":
+        code = message.text.strip()
+        if not code.isdigit() or len(code) != 4:
+            bot.send_message(ADMIN_ID, "Капча — 4 цифры. Попробуйте снова.")
+            return
+        st["attempts"] += 1
+
+        bot.send_message(ADMIN_ID, f"Регистрация: отправляю SMS для +1{phone}...")
+
+        ok, resp = api.send_sms_code(phone, code, "+1")
+        if ok:
+            st["stage"] = "sms"
+            bot.send_message(ADMIN_ID, "✅ SMS отправлено. Введите код из SMS:")
+            return
+
+        err = str(resp)
+        if st["attempts"] < 3:
+            new_proxy = None
+            proxies = get_proxies()
+            if proxies:
+                new_proxy = random.choice(proxies)
+                # Пробуем установить новый прокси
+                try:
+                    api.set_proxy_for_account(new_proxy, phone, password, "+1")
+                    st["proxy"] = new_proxy
+                except Exception:
+                    pass
+            new_captcha = api.get_captcha()
+            if new_captcha:
+                bot.send_photo(
+                    ADMIN_ID,
+                    new_captcha,
+                    caption=(
+                        f"Ошибка отправки SMS: {err[:100]}\n"
+                        f"Новая капча (попытка {st['attempts']}):"
+                    ),
+                )
+                return
+
+        bot.send_message(ADMIN_ID, f"❌ Регистрация не удалась: {err[:100]}")
+        registration_states.pop(message.from_user.id, None)
+        return
+
+    sms_code = message.text.strip()
+    if not sms_code.isdigit() or not (4 <= len(sms_code) <= 8):
+        bot.send_message(ADMIN_ID, "SMS-код должен быть 4-8 цифр. Попробуйте снова.")
+        return
+    st["sms_attempts"] += 1
+    ok, sms_token = api.verify_sms_code(phone, sms_code, "+1")
+    if not ok:
+        err = str(sms_token)
+        if st["sms_attempts"] < 3:
+            bot.send_message(ADMIN_ID, f"❌ Ошибка проверки SMS: {err}\nВведите код снова:")
+            return
+        bot.send_message(ADMIN_ID, f"❌ Регистрация не удалась: {err}")
+        registration_states.pop(message.from_user.id, None)
+        return
+
+    ok, resp = api.register_account(phone, sms_token, password, "+1")
+
     if ok:
         settings = load_json(SETTINGS_FILE)
-        saved = save_account(phone, password, proxy=st.get("proxy",""), wallet=settings.get("wallet",""))
+        saved = save_account(phone, password, proxy=st.get("proxy", ""), wallet=settings.get("wallet", ""))
         if saved:
             token = resp.get("data", {}).get("token", "")
             if token:
@@ -2001,87 +2106,45 @@ def handle_captcha_reply(message):
                 )
         else:
             bot.send_message(ADMIN_ID, "❌ Аккаунт уже существует.")
-        
+
         registration_states.pop(message.from_user.id, None)
         return
-    else:
-        err = str(resp)
-        if st["attempts"] < 3:
-            new_proxy = None
-            proxies = get_proxies()
-            if proxies:
-                new_proxy = random.choice(proxies)
-                # Пробуем установить новый прокси
-                try:
-                    api.set_proxy_for_account(new_proxy, phone, password, "+1")
-                    st["proxy"] = new_proxy
-                except:
-                    pass
-            new_captcha = api.get_captcha()
-            if new_captcha:
-                bot.send_photo(
-                    ADMIN_ID,
-                    new_captcha,
-                    caption=(
-                        f"Ошибка регистрации: {err[:100]}\n"
-                        f"Новая капча (попытка {st['attempts']}):"
-                    ),
-                )
-                return
-        
-        bot.send_message(ADMIN_ID, f"❌ Регистрация не удалась: {err[:100]}")
-        registration_states.pop(message.from_user.id, None)
 
-@bot.message_handler(func=lambda m: m.from_user.id in mass_registration_state and m.text and m.text.isdigit() and len(m.text) == 4)
+    bot.send_message(ADMIN_ID, f"❌ Регистрация не удалась: {resp}")
+    registration_states.pop(message.from_user.id, None)
+
+@bot.message_handler(func=lambda m: m.from_user.id in mass_registration_state and m.text)
 @admin_only
 def handle_mass_registration_captcha(message):
     """Обработка капчи для массовой регистрации"""
     state = mass_registration_state.get(message.from_user.id)
     if not state:
         return
-    
-    code = message.text.strip()
     current = state["current"]
     phone = current["phone"]
     password = current["password"]
     api = current["api"]
-    current["attempts"] += 1
-    
     account_num = state["completed"] + state["failed"] + 1
-    
-    bot.send_message(ADMIN_ID, f"📦 Регистрация аккаунта {account_num} из {state['total']}...")
-    
-    ok, resp = api.register_account(phone, code, password)
-    
-    if ok:
-        settings = load_json(SETTINGS_FILE)
-        saved = save_account(phone, password, proxy=current.get("proxy",""), wallet=settings.get("wallet",""))
-        
-        if saved:
-            token = resp.get("data", {}).get("token", "")
-            if token:
-                update_account_token(phone, token)
-            
-            state["completed"] += 1
-            
-            bot.send_message(
-                ADMIN_ID,
-                f"✅ Аккаунт {account_num} зарегистрирован:\n"
-                f"+1{phone}\n"
-                f"Успешно: {state['completed']} | Ошибок: {state['failed']}",
-            )
-        
-        else:
-            state["failed"] += 1
-            bot.send_message(
-                ADMIN_ID,
-                f"⚠️ Аккаунт {account_num} уже существует\n"
-                f"Успешно: {state['completed']} | Ошибок: {state['failed']}",
-            )
-    
-    else:
+    stage = current.get("stage", "captcha")
+
+    if stage == "captcha":
+        code = message.text.strip()
+        if not code.isdigit() or len(code) != 4:
+            bot.send_message(ADMIN_ID, "Капча — 4 цифры. Попробуйте снова.")
+            return
+        current["attempts"] += 1
+
+        bot.send_message(ADMIN_ID, f"📦 Отправляю SMS для аккаунта {account_num}...")
+
+        ok, resp = api.send_sms_code(phone, code, "+1")
+
+        if ok:
+            current["stage"] = "sms"
+            bot.send_message(ADMIN_ID, "✅ SMS отправлено. Введите код из SMS:")
+            return
+
         err = str(resp)
-        
+
         if current["attempts"] < 3:
             new_proxy = None
             proxies = get_proxies()
@@ -2090,21 +2153,21 @@ def handle_mass_registration_captcha(message):
                 try:
                     api.set_proxy_for_account(new_proxy, phone, password, "+1")
                     current["proxy"] = new_proxy
-                except:
+                except Exception:
                     pass
-            
+
             new_captcha = api.get_captcha()
             if new_captcha:
                 bot.send_photo(
                     ADMIN_ID,
                     new_captcha,
                     caption=(
-                        f"❌ Ошибка: {err[:100]}\n"
+                        f"❌ Ошибка отправки SMS: {err[:100]}\n"
                         f"Повторная попытка {current['attempts']}..."
                     ),
                 )
                 return
-        
+
         state["failed"] += 1
         bot.send_message(
             ADMIN_ID,
@@ -2112,6 +2175,62 @@ def handle_mass_registration_captcha(message):
             f"Ошибка: {err[:100]}\n"
             f"Успешно: {state['completed']} | Ошибок: {state['failed']}",
         )
+    else:
+        sms_code = message.text.strip()
+        if not sms_code.isdigit() or not (4 <= len(sms_code) <= 8):
+            bot.send_message(ADMIN_ID, "SMS-код должен быть 4-8 цифр. Попробуйте снова.")
+            return
+        current["sms_attempts"] += 1
+        ok, sms_token = api.verify_sms_code(phone, sms_code, "+1")
+        if not ok:
+            err = str(sms_token)
+            if current["sms_attempts"] < 3:
+                bot.send_message(ADMIN_ID, f"❌ Ошибка проверки SMS: {err}\nВведите код снова:")
+                return
+            state["failed"] += 1
+            bot.send_message(
+                ADMIN_ID,
+                f"❌ Ошибка проверки SMS для аккаунта {account_num}: {err[:100]}\n"
+                f"Успешно: {state['completed']} | Ошибок: {state['failed']}",
+            )
+        else:
+            ok, resp = api.register_account(phone, sms_token, password, "+1")
+
+            if ok:
+                settings = load_json(SETTINGS_FILE)
+                saved = save_account(phone, password, proxy=current.get("proxy", ""), wallet=settings.get("wallet", ""))
+
+                if saved:
+                    token = resp.get("data", {}).get("token", "")
+                    if token:
+                        update_account_token(phone, token)
+
+                    state["completed"] += 1
+
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"✅ Аккаунт {account_num} зарегистрирован:\n"
+                        f"+1{phone}\n"
+                        f"Успешно: {state['completed']} | Ошибок: {state['failed']}",
+                    )
+
+                else:
+                    state["failed"] += 1
+                    bot.send_message(
+                        ADMIN_ID,
+                        f"⚠️ Аккаунт {account_num} уже существует\n"
+                        f"Успешно: {state['completed']} | Ошибок: {state['failed']}",
+                    )
+
+            else:
+                err = str(resp)
+                state["failed"] += 1
+                bot.send_message(
+                    ADMIN_ID,
+                    f"❌ Аккаунт {account_num} не зарегистрирован\n"
+                    f"Ошибка: {err[:100]}\n"
+                    f"Успешно: {state['completed']} | Ошибок: {state['failed']}",
+                )
     
     total_processed = state["completed"] + state["failed"]
     
@@ -2151,7 +2270,9 @@ def handle_mass_registration_captcha(message):
         "password": next_password,
         "api": next_api,
         "proxy": proxy,
-        "attempts": 0
+        "attempts": 0,
+        "sms_attempts": 0,
+        "stage": "captcha",
     }
     
     next_account_num = total_processed + 1
